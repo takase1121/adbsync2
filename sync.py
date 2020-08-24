@@ -15,47 +15,42 @@ from remotewalker import get_remote_files
 
 
 class Delta:
-    """
-    Describes difference between two clients
-    """
+    """Describes difference between two clients"""
     def __init__(self, dest: str):
         self.destination: Path = Path(dest)
         self.add: FileStatDict = {}
         self.delete: FileStatDict = {}
 
 
-async def get_diff(local: str, remote: str,
-                depth:int=10, find_delete:bool=False,
-                dry_run:bool=False, dump_delta:str=None) -> Delta:
-    """
-    Returns the difference between local and remote.
-    """
+async def get_diff(
+        source: str, destination: str,
+        max_depth: int = 10, delete_files: bool = False,
+        delta_path: str = None) -> Delta:
+    """Returns the difference between local and remote"""
+
     debug('[Main] WELCOME TO DRY RUN WHERE YOU CAN DO WHATEVER YOU WANT!')
     debug('[Main] Fetching local and remote file list')
-    local_files = await get_local_files(local, max_depth=depth)
-    remote_files = await get_remote_files(remote, max_depth=depth)
+    src_files = await get_local_files(source, max_depth=max_depth)
+    dest_files = await get_remote_files(destination, max_depth=max_depth)
     debug('[Main] Done fetching local and remote file list')
 
-    delta = Delta(remote)
-    debug(f'[Delta] Start processing files, {len(local_files)} local, {len(remote_files)} remote')
-    if find_delete:
-        delete_list = [check_local_exist(relname, local_files) for relname in remote_files.keys()]
-        delete_list = [(x, remote_files[x]) for x in delete_list if x is not None]
+    delta = Delta(destination)
+    debug(f'[Delta] Start processing files, {len(src_files)} local, {len(dest_files)} remote')
+    if delete_files:
+        delete_list = [file for file in dest_files.items() if file[0] in src_files]
         delta.delete = dict(delete_list)
     
-    update_list = [check_should_update(relname, local_files, remote_files) for relname in local_files.keys()]
-    update_list = [(x, local_files[x]) for x in update_list if x is not None]
+    update_list = [file for file in src_files.items() if delta_should_add(file[1], src_files, dest_files)]
     delta.add = dict(update_list)
     debug(f'[Delta] Done processing files. {len(delta.delete)} to delete, {len(delta.add)} to add')
 
-    if config.is_debug or dry_run:
+    if config.debug_general or config.dry_run:
         show_delta(delta)
-    if dump_delta:
-        dump_delta_to_file(delta, dump_delta)
+    if delta_path:
+        dump_delta_to_file(delta, delta_path)
     return delta
 
-
-async def del_remote(delta: Delta, batch_size:int=100, dry_run:bool=False) -> None:
+async def del_remote(delta: Delta, batch_size: int = 100) -> None:
     """
     Delete files from remote with the rm command.
     """
@@ -69,14 +64,16 @@ async def del_remote(delta: Delta, batch_size:int=100, dry_run:bool=False) -> No
         ]
         log_adb_command(adb_command)
 
-        if not dry_run:
-            proc = await asyncio.create_subprocess_exec(*adb_command)
+        if not config.dry_run:
+            proc = await asyncio.create_subprocess_exec(*adb_command, 
+                                                        stdout=asyncio.subprocess.PIPE,
+                                                        stderr=asyncio.subprocess.STDOUT,
+                                                        stdin=asyncio.subprocess.DEVNULL)
             result = await proc.communicate()
             log_adb_error(proc, result)
         slider.update(batch_size)
 
-
-async def send_remote(delta: Delta, batch_size:int=5, dry_run:bool=False):
+async def send_remote(delta: Delta, batch_size: int = 5) -> None:
     """
     Send files to remote with adb push.
     adb is run in parallel to increase speed.
@@ -94,52 +91,36 @@ async def send_remote(delta: Delta, batch_size:int=5, dry_run:bool=False):
             adb_command.append(destination.as_posix())
             log_adb_command(adb_command)
 
-            if not dry_run:
+            if not config.dry_run:
                 proc = await asyncio.create_subprocess_exec(*adb_command,
                                                             stdout=asyncio.subprocess.PIPE,
                                                             stderr=asyncio.subprocess.STDOUT,
                                                             stdin=asyncio.subprocess.DEVNULL)
                 send_queue.append(proc)
-        if not dry_run:
+        if not config.dry_run:
             proc_result = await asyncio.gather(*[proc.communicate() for proc in send_queue])
             for proc, comm_result in zip(send_queue, proc_result):
                 log_adb_error(proc, comm_result)
         slider.update(batch_size)
 
 
-def check_local_exist(relname: str, local: FileStatDict) -> str:
-    """
-    Checks if file exists remotely, meaning that it should be deleted
-    Returns str or None
-    """
-    return relname if relname not in local else None
+def delta_should_add(local_file: FileStat, src: FileStatDict, dest: FileStatDict) -> bool:
+    """Checks or file existence, file size and file mtime"""
+    if local_file.relname not in dest:
+        return True
+    remote_file = dest[local_file.relname]
+    if local_file.size != remote_file.size or local_file.size > remote_file.mtime:
+        return True
+    return False
 
-
-def check_should_update(relname: str, local: FileStatDict, remote: FileStatDict) -> str:
-    """
-    Checks or file existence, file size and file mtime.
-    Returns str or None
-    """
-    if relname not in remote:
-        return relname
-    lf = local[relname]
-    rf = remote[relname]
-    if (lf.size != rf.size) or (lf.mtime > rf.mtime):
-        return relname
-    return None
 
 def show_delta(delta: Delta):
-    """
-    Prints the delta in stdout
-    """
+    """Prints the delta in stdout"""
     for relname in delta.delete: print(f'[Log] Deleting: {relname}')
     for relname in delta.add: print(f'[Log] Adding: {relname}')
 
 def dump_delta_to_file(delta: Delta, delta_path: str):
-    """
-    Dumps the delta in a file.
-    This contains more information
-    """
+    """Dumps the delta in a JSON file"""
     class PathEncoder(json.JSONEncoder):
         def default(self, o):
             if hasattr(o, '__dict__'):
@@ -149,4 +130,3 @@ def dump_delta_to_file(delta: Delta, delta_path: str):
     
     with open(delta_path, 'w') as f:
         json.dump(delta, f, indent=4, cls=PathEncoder)
-        f.close()

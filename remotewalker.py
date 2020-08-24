@@ -9,7 +9,7 @@ from adb_common import make_adb_command, escape_sh_str
 from filestructs import RemoteFileStat, FileStatDict
 
 
-async def get_remote_files(path: str, max_depth:int=1, output_dict: FileStatDict={}) -> FileStatDict:
+async def get_remote_files(path: str, max_depth: int = 1, output_dict: FileStatDict = {}) -> FileStatDict:
     """
     This uses find. May not be available in most systems, but I don't care.
     Updated to use find and stat seperately with chunking to reduce overhead

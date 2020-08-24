@@ -1,3 +1,12 @@
 {
-    "python.pythonPath": "C:\\Users\\Takase\\.virtualenvs\\pything-Walz9T27\\Scripts\\python.exe"
+    "files.exclude": {
+        "**/.git": true,
+        "**/.svn": true,
+        "**/.hg": true,
+        "**/CVS": true,
+        "**/.DS_Store": true,
+        "**/*.pyc": true,
+        "**/__pycache__": true
+    },
+    "python.pythonPath": "c:\\Users\\Takase\\.virtualenvs\\adbsync2-e3Jo6K3u\\Scripts\\python.exe"
 }

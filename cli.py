@@ -52,9 +52,7 @@ def accumulate(a: Union[str, FileStat], b: FileStat) -> int:
 
 
 async def run(args):
-    """
-    Runs everything
-    """
+    """Runs everything"""
     diff = await sync.get_diff(
         args.source, args.destination,
         max_depth=args.max_depth, delete_files=args.delete_files,

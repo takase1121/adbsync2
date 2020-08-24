@@ -19,4 +19,4 @@ def escape_sh_str(s: str) -> str:
     "You're dumb" -> 'You'"'"'re dumb'
     Notice the double quotes. There are actually 3 string literals there
     """
-    return "'{}'".format(s.replace("'", "'\"'\"'"))
+    return "'" + s.replace("'", "'\"'\"'") + "'"

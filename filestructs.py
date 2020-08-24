@@ -41,4 +41,4 @@ class RemoteFileStat(FileStat):
         self.relname = Path(self.filename).relative_to(root).as_posix()
         self.type = stat.S_IFMT(filebit)
         self.size = int(columns[2])
-        self.mtime = parse_date(columns[3]).timestamp()
+        self.mtime = round(parse_date(columns[3]).timestamp())

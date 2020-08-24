@@ -8,5 +8,5 @@
         "**/*.pyc": true,
         "**/__pycache__": true
     },
-    "python.pythonPath": "c:\\Users\\Takase\\.virtualenvs\\adbsync2-e3Jo6K3u\\Scripts\\python.exe"
+    "python.pythonPath": "C:\\Users\\Takase\\.virtualenvs\\adbsync2-e3Jo6K3u\\Scripts\\python.exe"
 }

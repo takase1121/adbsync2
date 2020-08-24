@@ -53,26 +53,35 @@ def accumulate(a: Union[str, FileStat], b: FileStat) -> int:
 
 async def run(args):
     """Runs everything"""
-    diff = await sync.get_diff(
-        args.source, args.destination,
-        max_depth=args.max_depth, delete_files=args.delete_files,
-        delta_path=args.delta_path)
+    diff = None
+    try:
+        diff = await sync.get_diff(
+            args.source, args.destination,
+            max_depth=args.max_depth, delete_files=args.delete_files,
+            delta_path=args.delta_path)
+    except BaseException as e:
+        print('Error:', str(e))
+        return
 
-    if args.delete_files and len(diff.delete) > 0:
-        await sync.del_remote(diff)
+    if args.delete_files and len(diff.remove) > 0:
+        (await sync.del_remote(diff)
+            if diff.direction == sync.SyncDirection.MACHINE_TO_PHONE else
+        await sync.del_local(diff))
     else:
         print('[Main] No files to delete, hooray!')
 
-    if len(diff.add) > 0:
-        await sync.send_remote(diff)
+    if len(diff.upload) > 0:
+        (await sync.send_to_remote(diff)
+            if diff.direction == sync.SyncDirection.MACHINE_TO_PHONE else
+        await sync.send_to_local(diff))
     else:
         print('[Main] No files to send to remote, hooray!')
 
-    total_transferred = reduce(accumulate, diff.add.values(), 0)
-    total_deleted = reduce(accumulate, diff.delete.values(), 0)
+    total_transferred = reduce(accumulate, diff.upload.values(), 0)
+    total_deleted = reduce(accumulate, diff.remove.values(), 0)
     print(linesep * 2)
     print(f'Transfer completed! {total_transferred} byte(s) transferred, {total_deleted} byte(s) deleted.')
-    print(f'Deleted {len(diff.delete)} file(s) and sent {len(diff.add)} file(s).')
+    print(f'Deleted {len(diff.remove)} file(s) and sent {len(diff.upload)} file(s).')
     print('Have a nice day and may I never need to fix this again.')
 
 def main():

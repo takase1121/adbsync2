@@ -2,8 +2,6 @@ import json
 import asyncio
 from pathlib import Path
 from typing import List, Dict
-from tempfile import NamedTemporaryFile
-from tarfile import TarFile
 from enum import Enum
 from datetime import datetime
 
@@ -193,6 +191,21 @@ async def send_and_touch(dest: Path, file_stat: FileStat):
     touch_result = await push_proc.communicate()
     # TODO: fix this. Touch doesn't return 0 even though it is successful.
     # log_adb_error(touch_proc, touch_result)
+
+
+def create_touch_cmd(destination: Path, chunk: Iterable[FileStat]) -> List[str]:
+    """Creates a very long list of adb shell + touch command. should be more efficient"""
+    adb_command = make_adb_command('shell')
+    for _, file_stat in chunk:
+        destination = destination / file_stat.relname
+        adb_command = [
+            *adb_command,
+            'touch', '-cmd',
+            escape_sh_str(datetime.fromtimestamp(file_stat.mtime).strftime('%Y-%m-%d-%H:%M:%S')),
+            escape_sh_str(destination.as_posix()), 
+            ';'
+        ]
+    return adb_command
 
 
 def show_delta(delta: Delta):

@@ -1,7 +1,7 @@
 import json
 import asyncio
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Iterable
 from enum import Enum
 from datetime import datetime
 
@@ -124,8 +124,26 @@ async def send_to_remote(delta: Delta, batch_size: int = 5) -> None:
     """
     slider = tqdm(total=len(delta.upload), desc='[Main] Pushing files to remote')
     for chunk in chunks(delta.upload.items(), n=batch_size):
-        if not config.dry_run:
-            await asyncio.gather(*[send_and_touch(delta.destination, file_stat) for _, file_stat in chunk])
+        send_queue = []
+        for _, file_stat in chunk:
+            source = file_stat.filename
+            destination = delta.destination / file_stat.relname
+            adb_command = [*make_adb_command('push'), source, destination.as_posix()]
+            log_adb_command(adb_command)
+
+            if not config.dry_run:
+                push_proc = await asyncio.create_subprocess_exec(*adb_command,
+                                                                    stdout=asyncio.subprocess.PIPE,
+                                                                    stderr=asyncio.subprocess.STDOUT,
+                                                                    stdin=asyncio.subprocess.DEVNULL)
+                send_queue.append(push_proc)
+
+        send_result = await asyncio.gather(*[proc.communicate() for proc in send_queue])
+        for relname, proc, proc_result in zip(chunk, send_queue, send_result):
+            if log_adb_error(proc, proc_result):
+                chunk = filter(lambda key, _: key != relname, chunk)
+
+        await touch_files(destination, chunk)
         slider.update(batch_size)
 
 async def send_to_local(delta: Delta, batch_size: int = 5) -> None:
@@ -137,12 +155,10 @@ async def send_to_local(delta: Delta, batch_size: int = 5) -> None:
         pull_queue = []
         for _, file_stat in chunk:
             source = file_stat.filename
-            
-
+            destination = delta.destination / file_stat.relname
             # on windows, before pulling you actually need to create all the subdirs.
             destination.parent.mkdir(parents=True, exist_ok=True)
-            destination = str(destination)
-            adb_command = [*base_adb_command, source, destination]
+            adb_command = [*base_adb_command, source, str(destination)]
             log_adb_command(adb_command)
 
             if not config.dry_run:
@@ -159,53 +175,27 @@ async def send_to_local(delta: Delta, batch_size: int = 5) -> None:
         slider.update(batch_size)
 
 
-async def send_and_touch(dest: Path, file_stat: FileStat):
-    """
-    Because adb push can't do this.
-    Apparently allowing people to preserve mtime is impossible it seems
-    with just a flag at adb. I had to use touch for it
-    """
-    source = file_stat.filename
-    destination = dest / file_stat.relname
-    adb_command = [*make_adb_command('push'), source, destination.as_posix()]
-    log_adb_command(adb_command)
-    push_proc = await asyncio.create_subprocess_exec(*adb_command,
-                                                        stdout=asyncio.subprocess.PIPE,
-                                                        stderr=asyncio.subprocess.STDOUT,
-                                                        stdin=asyncio.subprocess.DEVNULL)
-    push_result = await push_proc.communicate()
-    log_adb_error(push_proc, push_result)
-
-    # now goddamn use touch to change the mtime
-    adb_command = [
-        *make_adb_command('shell'),
-        'touch', '-cmd',
-        escape_sh_str(datetime.fromtimestamp(file_stat.mtime).strftime('%Y-%m-%d-%H:%M:%S')),
-        escape_sh_str(destination.as_posix())
-    ]
-    log_adb_command(adb_command)
-    touch_proc = await asyncio.create_subprocess_exec(*adb_command,
-                                                        stdout=asyncio.subprocess.PIPE,
-                                                        stderr=asyncio.subprocess.STDOUT,
-                                                        stdin=asyncio.subprocess.DEVNULL)
-    touch_result = await push_proc.communicate()
-    # TODO: fix this. Touch doesn't return 0 even though it is successful.
-    # log_adb_error(touch_proc, touch_result)
-
-
-def create_touch_cmd(destination: Path, chunk: Iterable[FileStat]) -> List[str]:
+async def touch_files(dest: Path, chunk: Iterable[FileStat]) -> List[str]:
     """Creates a very long list of adb shell + touch command. should be more efficient"""
     adb_command = make_adb_command('shell')
     for _, file_stat in chunk:
-        destination = destination / file_stat.relname
+        destination = dest / file_stat.relname
         adb_command = [
             *adb_command,
             'touch', '-cmd',
-            escape_sh_str(datetime.fromtimestamp(file_stat.mtime).strftime('%Y-%m-%d-%H:%M:%S')),
+            escape_sh_str(datetime.fromtimestamp(file_stat.mtime).strftime('%Y-%m-%d%H:%M:%S')),
             escape_sh_str(destination.as_posix()), 
             ';'
         ]
-    return adb_command
+
+    log_adb_command(adb_command)
+    if not config.dry_run:
+        touch_proc = await asyncio.create_subprocess_exec(*adb_command,
+                                                            stdout=asyncio.subprocess.PIPE,
+                                                            stderr=asyncio.subprocess.STDOUT,
+                                                            stdin=asyncio.subprocess.DEVNULL)
+        touch_result = await touch_proc.communicate()
+        log_adb_error(touch_proc, touch_result)
 
 
 def show_delta(delta: Delta):

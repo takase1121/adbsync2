@@ -1,15 +1,16 @@
 import json
 import asyncio
-from pathlib import Path
-from typing import List, Dict, Iterable
 from enum import Enum
+from typing import List, Dict, Iterable
+from itertools import chain
+from pathlib import Path
 from datetime import datetime
 
 from tqdm import tqdm
 
 import config
-from common import chunks, debug, log_adb_error, log_adb_command
-from adb_common import make_adb_command, escape_sh_str
+from common import chunks, debug, log_adb_command
+from adb_common import make_adb_command, run_adb_command, escape_sh_str
 
 from filestructs import FileStat, FileStatDict
 from localwalker import get_local_files
@@ -39,7 +40,6 @@ async def get_diff(
         max_depth: int = 10, delete_files: bool = False,
         delta_path: str = None) -> Delta:
     """Returns the difference between local and remote"""
-
     direction = None
     local_path, remote_path = None, None
     # check for sync direction from source and destination
@@ -87,32 +87,31 @@ async def get_diff(
         dump_delta_to_file(delta, delta_path)
     return delta
 
+
 async def del_remote(delta: Delta, batch_size: int = 100) -> None:
     """Delete files from remote with the rm command"""
-    slider = tqdm(total=len(delta.remove), desc='[Main] Deleting remote files')
-    for chunk in chunks(delta.remove.items(), n=batch_size):
-        adb_command = make_adb_command('shell')
-        adb_command = [
-            *adb_command, 'rm', '-r',
-            *[escape_sh_str(file.filename) for _, file in chunk]
-        ]
-        log_adb_command(adb_command)
+    with tqdm(total=len(delta.remove),
+                desc='[Main] Deleting remote files', unit='file') as slider:
 
-        if not config.dry_run:
-            proc = await asyncio.create_subprocess_exec(*adb_command, 
-                                                        stdout=asyncio.subprocess.PIPE,
-                                                        stderr=asyncio.subprocess.STDOUT,
-                                                        stdin=asyncio.subprocess.DEVNULL)
-            result = await proc.communicate()
-            log_adb_error(proc, result)
-        slider.update(batch_size)
+        base_adb_command = make_adb_command('shell')
+        for chunk in chunks(delta.remove.items(), n=batch_size):
+            adb_command = [
+                *base_adb_command, 'rm', '-r',
+                *[escape_sh_str(file_stat.filename) for _, file_stat in chunk]
+            ]
+            log_adb_command(adb_command)
+
+            if not config.dry_run:
+                await run_adb_command(adb_command)
+            slider.update(batch_size)
 
 async def del_local(delta: Delta) -> None:
     """Delete local files"""
-    delete_iter = tqdm(delta.remove.items(), desc='[Main] Deleting local files')
+    delete_iter = tqdm(delta.remove.items(), desc='[Main] Deleting local files', unit='file')
     for _, file_stat in delete_iter:
         p = Path(file_stat.filename)
         p.unlink(missing_ok=True)
+
 
 async def send_to_remote(delta: Delta, batch_size: int = 5) -> None:
     """
@@ -122,80 +121,59 @@ async def send_to_remote(delta: Delta, batch_size: int = 5) -> None:
     NOTE: in order to actually preserve metadata, we have to send and touch the file.
     I hate you Android.
     """
-    slider = tqdm(total=len(delta.upload), desc='[Main] Pushing files to remote')
-    for chunk in chunks(delta.upload.items(), n=batch_size):
-        send_queue = []
-        for _, file_stat in chunk:
+    def run_cmd(file_stat: FileStat):
             source = file_stat.filename
             destination = delta.destination / file_stat.relname
             adb_command = [*make_adb_command('push'), source, destination.as_posix()]
             log_adb_command(adb_command)
-
-            if not config.dry_run:
-                push_proc = await asyncio.create_subprocess_exec(*adb_command,
-                                                                    stdout=asyncio.subprocess.PIPE,
-                                                                    stderr=asyncio.subprocess.STDOUT,
-                                                                    stdin=asyncio.subprocess.DEVNULL)
-                send_queue.append(push_proc)
-
-        send_result = await asyncio.gather(*[proc.communicate() for proc in send_queue])
-        for relname, proc, proc_result in zip(chunk, send_queue, send_result):
-            if log_adb_error(proc, proc_result):
-                chunk = filter(lambda key, _: key != relname, chunk)
-
-        await touch_files(destination, chunk)
-        slider.update(batch_size)
+            return run_adb_command(adb_command)
+    
+    with tqdm(total=len(delta.upload),
+                desc='[Main] Pushing files to remote', unit='file') as slider:        
+        for chunk in chunks(delta.upload.items(), n=batch_size):
+            send_queue = [run_cmd(file_stat) for _, file_stat in chunk if not config.dry_run]
+            send_result = await asyncio.gather(*send_queue)
+            filtered_chunk = [c for c, (errored, _) in zip(chunk, send_result) if not errored]
+            
+            await touch_files(delta.destination, filtered_chunk)
+            slider.update(batch_size)
 
 async def send_to_local(delta: Delta, batch_size: int = 5) -> None:
     """Pull files from remote to local"""
-    slider = tqdm(total=len(delta.upload), desc='[Main] Pulling files to local')
     base_adb_command = make_adb_command('pull')
     base_adb_command.append('-a')
-    for chunk in chunks(delta.upload.items(), n=batch_size):
-        pull_queue = []
-        for _, file_stat in chunk:
-            source = file_stat.filename
-            destination = delta.destination / file_stat.relname
-            # on windows, before pulling you actually need to create all the subdirs.
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            adb_command = [*base_adb_command, source, str(destination)]
-            log_adb_command(adb_command)
+    def run_cmd(file_stat: FileStat):
+        source = file_stat.filename
+        destination = delta.destination / file_stat.relname
+        # mkdir parent path just in case because adb on Windows will error
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        adb_command = [*base_adb_command, source, str(destination)]
+        log_adb_command(adb_command)
+        return run_adb_command(adb_command)
 
-            if not config.dry_run:
-                proc = await asyncio.create_subprocess_exec(*adb_command, 
-                                                            stdout=asyncio.subprocess.PIPE,
-                                                            stderr=asyncio.subprocess.STDOUT,
-                                                            stdin=asyncio.subprocess.DEVNULL)
-                pull_queue.append(proc)
-        
-        if not config.dry_run:
-            queue_result = await asyncio.gather(*[proc.communicate() for proc in pull_queue])
-            for proc, proc_result in zip(pull_queue, queue_result):
-                log_adb_error(proc, proc_result)
-        slider.update(batch_size)
+    with tqdm(total=len(delta.upload),
+                desc='[Main] Pulling files to local', unit='file') as slider:
+        for chunk in chunks(delta.upload.items(), n=batch_size):
+            await asyncio.gather(*[run_cmd(file_stat) for _, file_stat in chunk if not config.dry_run])
+            slider.update(batch_size)
 
 
 async def touch_files(dest: Path, chunk: Iterable[FileStat]) -> List[str]:
     """Creates a very long list of adb shell + touch command. should be more efficient"""
-    adb_command = make_adb_command('shell')
-    for _, file_stat in chunk:
+    base_adb_command = make_adb_command('shell')
+    def generate_cmd(file_stat: FileStat):
         destination = dest / file_stat.relname
-        adb_command = [
-            *adb_command,
+        return [
             'touch', '-cmd',
             escape_sh_str(datetime.fromtimestamp(file_stat.mtime).strftime('%Y-%m-%d%H:%M:%S')),
-            escape_sh_str(destination.as_posix()), 
+            escape_sh_str(destination.as_posix()),
             ';'
         ]
 
-    log_adb_command(adb_command)
     if not config.dry_run:
-        touch_proc = await asyncio.create_subprocess_exec(*adb_command,
-                                                            stdout=asyncio.subprocess.PIPE,
-                                                            stderr=asyncio.subprocess.STDOUT,
-                                                            stdin=asyncio.subprocess.DEVNULL)
-        touch_result = await touch_proc.communicate()
-        log_adb_error(touch_proc, touch_result)
+        adb_command = chain.from_iterable([generate_cmd(file_stat) for _, file_stat in chunk if not config.dry_run])
+        adb_command = [*base_adb_command, *adb_command]
+        await run_adb_command(adb_command)
 
 
 def show_delta(delta: Delta):

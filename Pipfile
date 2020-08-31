@@ -6,7 +6,6 @@ verify_ssl = true
 [dev-packages]
 
 [packages]
-iso8601 = "~=0.1.12"
 tqdm = "~=4.48.2"
 
 [requires]

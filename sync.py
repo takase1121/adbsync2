@@ -171,7 +171,7 @@ async def touch_files(dest: Path, chunk: Iterable[FileStat]) -> List[str]:
         ]
 
     if not config.dry_run:
-        adb_command = chain.from_iterable([generate_cmd(file_stat) for _, file_stat in chunk if not config.dry_run])
+        adb_command = chain.from_iterable([generate_cmd(file_stat) for _, file_stat in chunk])
         adb_command = [*base_adb_command, *adb_command]
         await run_adb_command(adb_command)
 

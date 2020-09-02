@@ -30,7 +30,7 @@ async def get_remote_files(path: str, max_depth: int = 1, output_dict: FileStatD
                 desc=f'[RemoteWalker] Running stat on file list', unit='file') as slider:
         for find_slice in chunks(find_output, n=100):
             adb_command = [
-                *base_adb_command, 'stat', '-c', '%N:%s:%Y',
+                *base_adb_command, 'stat', '-c', '::::%N:%s:%Y',
                 *[escape_sh_str(filename) for filename in find_slice]
             ]
             if config.debug_stat: log_adb_command(adb_command)
@@ -38,7 +38,8 @@ async def get_remote_files(path: str, max_depth: int = 1, output_dict: FileStatD
             errored, output = await run_adb_command(adb_command)
             if not errored:
                 for line in output.splitlines():
-                    file_stat = RemoteFileStat(path, line, ':')
+                    if not line.startswith('::::'): continue
+                    file_stat = RemoteFileStat(path, line[4:], ':')
                     output_dict[file_stat.relname] = file_stat
             slider.update(100)
 

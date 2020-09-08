@@ -1,8 +1,7 @@
 from typing import Dict
 from pathlib import Path
 
-from tqdm import tqdm
-
+from common import bar
 from filestructs import LocalFileStat, FileStatDict
 
 
@@ -18,8 +17,7 @@ async def get_local_files(path: str, max_depth: int = 1, output_dict: FileStatDi
     p = Path(path)
 
     f_iter = [f for f in p.rglob('*') if f.is_file() and not_max_depth(f, p, max_depth)]
-    for file in tqdm(f_iter,
-            desc='[LocalWalker] Generating local file list', unit='file'):
+    for file in bar(f_iter, f'INFO:{__name__}:Creating local file list'):
         stat = LocalFileStat(path, file)
         output_dict[stat.relname] = stat
     return output_dict

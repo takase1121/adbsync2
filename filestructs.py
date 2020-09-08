@@ -4,14 +4,10 @@ from pathlib import Path
 
 
 class FileStat:
-    """
-    Base class
-    """
-    def __init__(self, root, filename, size, mtime):
-        self.filename = filename
-        self.relname = root
-        self.size = size
-        self.mtime = mtime
+    filename: str
+    relname: str
+    size: int
+    mtime: int
 
 FileStatDict = Dict[str, FileStat]
 

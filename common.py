@@ -1,33 +1,44 @@
 from os import linesep
-from itertools import zip_longest
 from asyncio.subprocess import Process
-from typing import Iterable, Callable, Tuple
+from typing import Iterable, Tuple, Union
+from logging import error, log, DEBUG
+from tqdm import tqdm
 
 import config
 
-def chunks(iterable: Iterable, n:int=100):
-    """Returns an iterator that returns the source in chunks of n"""
-    args = [iter(iterable)] * n
-    return [[entry for entry in zip_output if entry is not None] for zip_output in zip_longest(*args)]
+def chunks(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
 
-def debug(*args):
-    """Used to print debug lines"""
-    if config.debug_general:
-        print(*args)
-
-def log_adb_command(command: Iterable[str]):
+def log_adb_command(command: Iterable[str], level: int = DEBUG):
     """Logs ADB command generated"""
-    debug('[ADB] Command generated:', *command)
+    log(level, f'ADB command generated: {" ".join([*command])}')
 
-def log_adb_error(proc: Process, comm_output: Tuple[str, str]):
+
+def log_adb_error(proc: Process, proc_output: Tuple[bytes, bytes]):
     """Logs adb error from an asyncio.subprocess.Process instance and output from proc.communicate()"""
     if proc.returncode != 0:
-        comm_output = comm_output[0].decode(encoding='utf-8')
-        print(
-            '[Error] ADB returned non zero return code:'
+        proc_stdout, proc_stderr = [stream.decode(encoding='utf-8') for stream in proc_output]
+        error(
+            '[Error] ADB command failed with non-zero return code.'
             + linesep
-            + linesep.join([f'--->{line}' for line in comm_output.splitlines()])
+            + '> stdout'
+            + linesep
+            + linesep.join([f'--->{line}' for line in proc_stdout.splitlines()])
+            + linesep
+            + '> stderr'
+            + linesep
+            + linesep.join([f'--->{line}' for line in proc_stderr.splitlines()])
         )
-        return True
-    return False
+
+    return proc.returncode != 0
+
+
+def bar(iter: Union[Iterable, int], desc: str):
+    """More elegant way to make progress bars"""
+    if isinstance(iter, int):
+        return tqdm(desc=desc, total=iter, unit='file(s)')
+    else:
+        return tqdm(iter, desc, unit='file(s)')

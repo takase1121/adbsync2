@@ -1,10 +1,9 @@
 import asyncio
-
-from tqdm import tqdm
+import shlex
 
 import config
-from common import chunks, log_adb_command
-from adb_common import make_adb_command, run_adb_command, escape_sh_str
+from common import chunks, log_adb_command, bar
+from adb_common import make_adb_command, run_adb_command
 
 from filestructs import RemoteFileStat, FileStatDict
 
@@ -21,26 +20,24 @@ async def get_remote_files(path: str, max_depth: int = 1, output_dict: FileStatD
     ]
     log_adb_command(adb_command)
 
-    errored, find_output = await run_adb_command(adb_command)
+    errored, find_output = await run_adb_command(adb_command, combine=False, bypass_dry_run=True)
     if errored:
-        return output_dict
+        raise Exception('Unable to run find command on remote')
     
     find_output = find_output.splitlines()
-    with tqdm(total=len(find_output),
-                desc=f'[RemoteWalker] Running stat on file list', unit='file') as slider:
-        for find_slice in chunks(find_output, n=100):
+    with bar(len(find_output), f'INFO:{__name__}:Creating remote file list') as slider:
+        for find_slice in chunks(find_output, config.command_batch_size):
             adb_command = [
-                *base_adb_command, 'stat', '-c', '::::%N:%s:%Y',
-                *[escape_sh_str(filename) for filename in find_slice]
+                *base_adb_command, 'stat', '-c', '%N:%s:%Y',
+                *map(shlex.quote, find_slice)
             ]
-            if config.debug_stat: log_adb_command(adb_command)
+            log_adb_command(adb_command)
 
-            errored, output = await run_adb_command(adb_command)
+            errored, output = await run_adb_command(adb_command, combine=False, bypass_dry_run=True)
             if not errored:
                 for line in output.splitlines():
-                    if not line.startswith('::::'): continue
-                    file_stat = RemoteFileStat(path, line[4:], ':')
+                    file_stat = RemoteFileStat(path, line, ':')
                     output_dict[file_stat.relname] = file_stat
-            slider.update(100)
+            slider.update(config.command_batch_size)
 
     return output_dict
